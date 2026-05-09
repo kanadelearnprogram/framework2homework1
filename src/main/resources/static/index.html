@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>File Manager</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f0f2f5; color: #333; min-height: 100vh; }
+.header { background: #fff; border-bottom: 1px solid #e0e0e0; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 20px; font-weight: 600; }
+.container { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+.toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+.btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+.btn-primary { background: #1a73e8; color: #fff; }
+.btn-primary:hover { background: #1557b0; }
+.btn-outline { background: #fff; border: 1px solid #d0d0d0; }
+.btn-outline:hover { background: #f5f5f5; }
+.breadcrumb { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; background: #fff; padding: 10px 16px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #e8e8e8; }
+.breadcrumb a { color: #1a73e8; text-decoration: none; cursor: pointer; font-size: 14px; }
+.breadcrumb a:hover { text-decoration: underline; }
+.breadcrumb span { color: #999; font-size: 14px; }
+.breadcrumb .current { color: #333; font-weight: 500; }
+.table-wrap { background: #fff; border-radius: 8px; border: 1px solid #e8e8e8; overflow: hidden; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; padding: 12px 16px; font-size: 12px; text-transform: uppercase; color: #666; background: #fafafa; border-bottom: 1px solid #e8e8e8; font-weight: 500; }
+td { padding: 10px 16px; border-bottom: 1px solid #f0f0f0; font-size: 14px; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: #f8f9ff; }
+.folder-link, .file-link { color: #1a73e8; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+.folder-link:hover, .file-link:hover { text-decoration: underline; }
+.icon { width: 18px; text-align: center; }
+.size-col { width: 120px; color: #888; }
+.empty { text-align: center; padding: 48px 16px; color: #999; }
+.error-msg { background: #fdecea; color: #b71c1c; padding: 10px 16px; border-radius: 6px; margin-bottom: 12px; display: none; }
+.upload-area { margin-top: 16px; padding: 12px 16px; background: #f8f9fa; border-radius: 6px; display: flex; align-items: center; gap: 12px; }
+.upload-area input[type=file] { flex: 1; font-size: 14px; }
+.upload-area .status { font-size: 13px; color: #666; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 12px; padding: 24px; width: 400px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+.modal h3 { margin-bottom: 16px; font-size: 18px; }
+.modal input { width: 100%; padding: 8px 12px; border: 1px solid #d0d0d0; border-radius: 6px; font-size: 14px; margin-bottom: 12px; }
+.modal .actions { display: flex; gap: 8px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>File Manager</h1>
+</div>
+<div class="container">
+  <div id="error" class="error-msg"></div>
+
+  <div class="breadcrumb" id="breadcrumb"></div>
+
+  <div class="toolbar">
+    <button class="btn btn-primary" onclick="document.getElementById('fileInput').click()">
+      Upload File
+    </button>
+    <button class="btn btn-outline" onclick="showNewFolderDialog()">New Folder</button>
+    <input type="file" id="fileInput" style="display:none" onchange="uploadFile()">
+  </div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Name</th><th class="size-col">Size</th></tr>
+      </thead>
+      <tbody id="fileTable"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="modal-overlay" id="folderModal">
+  <div class="modal">
+    <h3>Create Folder</h3>
+    <input type="text" id="folderName" placeholder="Folder name">
+    <div class="actions">
+      <button class="btn btn-outline" onclick="hideNewFolderDialog()">Cancel</button>
+      <button class="btn btn-primary" onclick="createFolder()">Create</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentPath = '';
+
+function loadFiles() {
+  fetch('/api/files?path=' + encodeURIComponent(currentPath))
+    .then(r => {
+      if (!r.ok) return r.text().then(t => Promise.reject(t));
+      return r.json();
+    })
+    .then(data => {
+      renderBreadcrumb();
+      renderTable(data);
+      hideError();
+    })
+    .catch(err => showError('Failed to load: ' + err));
+}
+
+function renderBreadcrumb() {
+  var bc = document.getElementById('breadcrumb');
+  bc.innerHTML = '';
+  bc.appendChild(createBreadLink('Root', ''));
+  if (currentPath) {
+    var parts = currentPath.split('/').filter(Boolean);
+    var accum = '';
+    parts.forEach(function(part, i) {
+      var span = document.createElement('span');
+      span.textContent = ' / ';
+      bc.appendChild(span);
+      accum += (accum ? '/' : '') + part;
+      if (i === parts.length - 1) {
+        var cur = document.createElement('span');
+        cur.className = 'current';
+        cur.textContent = part;
+        bc.appendChild(cur);
+      } else {
+        bc.appendChild(createBreadLink(part, accum));
+      }
+    });
+  }
+}
+
+function createBreadLink(label, path) {
+  var a = document.createElement('a');
+  a.textContent = label;
+  a.onclick = function() { navigateTo(path); };
+  return a;
+}
+
+function renderTable(data) {
+  var tbody = document.getElementById('fileTable');
+  tbody.innerHTML = '';
+  if (!data || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="2" class="empty">This folder is empty</td></tr>';
+    return;
+  }
+  data.forEach(function(item) {
+    var tr = document.createElement('tr');
+    var nameTd = document.createElement('td');
+    var sizeTd = document.createElement('td');
+    sizeTd.className = 'size-col';
+
+    var link = document.createElement('span');
+    link.className = item.type === 'DIR' ? 'folder-link' : 'file-link';
+    link.onclick = function() {
+      if (item.type === 'DIR') {
+        navigateTo(currentPath ? currentPath + '/' + item.name : item.name);
+      } else {
+        downloadFile(item.name);
+      }
+    };
+
+    var icon = document.createElement('span');
+    icon.className = 'icon';
+    icon.textContent = item.type === 'DIR' ? '\u{1F4C1}' : '\u{1F4C4}';
+    link.appendChild(icon);
+    link.appendChild(document.createTextNode(' ' + item.name));
+    nameTd.appendChild(link);
+    sizeTd.textContent = item.type === 'DIR' ? '-' : formatSize(item.size);
+
+    tr.appendChild(nameTd);
+    tr.appendChild(sizeTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function navigateTo(path) {
+  currentPath = path;
+  loadFiles();
+}
+
+function downloadFile(name) {
+  var filePath = currentPath ? currentPath + '/' + name : name;
+  window.open('/api/download?path=' + encodeURIComponent(filePath), '_blank');
+}
+
+function uploadFile() {
+  var input = document.getElementById('fileInput');
+  var file = input.files[0];
+  if (!file) return;
+
+  var formData = new FormData();
+  formData.append('file', file);
+
+  fetch('/api/upload?path=' + encodeURIComponent(currentPath), {
+    method: 'POST',
+    body: formData
+  })
+    .then(r => r.text())
+    .then(msg => {
+      if (msg === 'Upload successful') {
+        loadFiles();
+        hideError();
+      } else {
+        showError(msg);
+      }
+    })
+    .catch(err => showError('Upload error: ' + err))
+    .finally(() => { input.value = ''; });
+}
+
+function showNewFolderDialog() {
+  document.getElementById('folderModal').classList.add('show');
+  document.getElementById('folderName').value = '';
+  document.getElementById('folderName').focus();
+}
+
+function hideNewFolderDialog() {
+  document.getElementById('folderModal').classList.remove('show');
+}
+
+function createFolder() {
+  var name = document.getElementById('folderName').value.trim();
+  if (!name) return;
+
+  var form = new FormData();
+  form.append('name', name);
+
+  fetch('/api/mkdir?path=' + encodeURIComponent(currentPath), {
+    method: 'POST',
+    body: form
+  })
+    .then(r => {
+      if (!r.ok) return r.text().then(t => Promise.reject(t));
+      return r.text();
+    })
+    .then(msg => {
+      hideNewFolderDialog();
+      loadFiles();
+    })
+    .catch(err => showError('Create folder failed: ' + err));
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+function showError(msg) {
+  var el = document.getElementById('error');
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+function hideError() {
+  document.getElementById('error').style.display = 'none';
+}
+
+document.getElementById('folderName').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') createFolder();
+});
+
+loadFiles();
+</script>
+</body>
+</html>
